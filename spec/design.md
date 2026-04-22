@@ -256,51 +256,55 @@ output:
 
 ## Trade-offs
 
-### Rejected Alternative 1: JSON instead of YAML as skill format
+### Rejected Alternative 1: Explicit `mode: free | pipeline` field instead of optional `steps`
 
-Idea: describe skills in JSON files. JSON is the de-facto standard for Node.js configs, parses natively without dependencies, and supports JSON Schema validation at runtime.
+Idea: add an explicit `mode` field to the skill format that switches runtime behaviour. The presence of `steps` alone is implicit — a `mode` field makes the intent unambiguous and allows future modes without overloading the meaning of a single field.
 
-```json
-{
-  "name": "csv-prepare-for-ml",
-  "system_prompt": "You are a data engineer...",
-  "tools": ["read_file", "run_python"],
-  "steps": [
-    { "id": "handle_missing", "prompt": "Handle all missing values..." }
-  ]
-}
+```yaml
+name: csv-prepare-for-ml
+mode: pipeline          # explicit switch
+steps:
+  - id: handle_missing
+    prompt: "..."
 ```
 
 **Why rejected:**
 
-JSON is poorly suited for storing prompts. `system_prompt` is multiline text, often 10-20 lines. In JSON it must be escaped (`\n`), killing readability and making editing painful. YAML supports block strings (`|`) natively — the prompt looks like regular text. For a skill where the prompt is the central element, this is critical. JSON Schema validation is a nice bonus, but can be implemented over YAML too (parse YAML → get object → validate programmatically). We remove one dependency (`yaml`) but lose format ergonomics. For a minimal runtime with two skills, readability matters more than native parsing.
+This is exactly what the assignment prohibits: "you cannot create a separate skill type specifically for strict pipelines". An explicit `mode` field is a type discriminator in disguise — it just hides the two-type design behind a single field name. The chosen approach is more honest: the presence of `steps` *is* the semantics. A skill with steps is constrained by definition; a skill without steps is free by definition. No additional flag needed. The cost is that an empty `steps: []` array is ambiguous (treated as free mode), but this edge case is documented and validated at load time.
 
-### Rejected Alternative 2: TypeScript files as skills (programmatic API)
+### Rejected Alternative 2: LangGraph for pipeline step orchestration
 
-Idea: instead of a declarative format, describe skills as TypeScript modules. Each skill is a `.ts` file exporting an object with the required structure. This gives full typing, IDE autocomplete, and the ability to use logic (conditions, loops) directly in skill definitions.
+Idea: use LangGraph to model the pipeline as a stateful graph. Each step becomes a node, transitions become edges, and the graph topology enforces execution order. This is the natural fit given LangGraph is explicitly mentioned in the job description.
 
 ```typescript
-export default defineSkill({
-  name: "csv-prepare-for-ml",
-  tools: [readFile, runPython],
-  steps: [
-    { id: "handle_missing", prompt: `Handle missing values...` },
-  ],
-  systemPrompt: `You are a data engineer...`,
+const graph = new StateGraph(...);
+graph.addNode("handle_missing", handleMissingNode);
+graph.addNode("remove_duplicates", removeDuplicatesNode);
+graph.addEdge("handle_missing", "remove_duplicates");
+// ...
+```
+
+**Why rejected:**
+
+LangGraph solves problems this runtime does not have: parallel branches, conditional transitions, multi-agent coordination, and persistent state across runs. For a linear four-step pipeline, it introduces a heavyweight abstraction over a problem that a simple `for` loop solves in 20 lines. More importantly, LangGraph would make the skill format dependent on graph topology definitions — moving orchestration logic out of the declarative YAML and into code. The assignment asks for a declarative skill format; LangGraph pushes in the opposite direction. The right tool for a linear sequence is a loop, not a graph engine.
+
+### Rejected Alternative 3: Schema-based validation (Zod/AJV) instead of programmatic validation in Skill Loader
+
+Idea: replace the hand-written validation in Skill Loader with a declarative schema library — Zod for TypeScript-first validation or AJV for JSON Schema. The skill structure is declared once as a schema, and validation + type inference are derived automatically.
+
+```typescript
+const StepSchema = z.object({ id: z.string(), prompt: z.string() });
+const SkillSchema = z.object({
+  name: z.string(),
+  system_prompt: z.string(),
+  tools: z.array(z.enum(["read_file", "list_directory", "run_python"])),
+  steps: z.array(StepSchema).optional(),
 });
 ```
 
 **Why rejected:**
 
-A programmatic API blurs the boundary between skill definition and execution. A skill should be data, not code — this allows loading, validating, and inspecting skills without execution. A TypeScript file must be imported (and thus executed), creating security issues when loading skills from external sources. The assignment asks for a "declarative format" — YAML/JSON/markdown. A TypeScript module is imperative code, even if it looks declarative. For an AI agent marketplace (vacancy context), a declarative format is critical: skills must be portable, inspectable, and safe to load.
-
-### Rejected Alternative 3: Separate conversation threads for each pipeline step
-
-Idea: each pipeline step runs in an isolated context (new conversation). Data between steps transfers only through workspace (files), not message history. Maximum isolation — the model on step 3 physically cannot see prompts and responses from steps 1-2.
-
-**Why rejected:**
-
-Full isolation sounds like a security advantage but kills practical usefulness. The model on step `normalize` doesn't know what columns were in the original dataset, what values were filled on step `handle_missing`, what format was chosen. It would need to re-discover context through tool calls (read_file), spending tokens and time. Worse — without history the model may make decisions contradicting previous steps (e.g. choose a different normalization strategy). Shared history is not a leak but necessary context for pipeline coherence.
+Zod and AJV handle structural validation well but cannot express cross-field constraints without custom refinements. The two constraints that matter most here — tool names must be registered in Tool Registry, and step ids must be unique within a skill — both require imperative logic regardless of the schema library used. Adding Zod for the structural part while still writing custom code for the semantic part means two validation layers with no clear boundary between them. The hand-written validator is ~40 lines, produces precise error messages, and has zero additional dependencies. The complexity budget for a 300–500 line project does not justify a schema library that solves only half the problem.
 
 ## Correctness Properties
 
