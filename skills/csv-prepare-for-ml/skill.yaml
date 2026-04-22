@@ -1,0 +1,50 @@
+name: csv-prepare-for-ml
+description: Prepare a CSV file for machine learning
+tools: [read_file, run_python]
+system_prompt: |
+  You are a data engineer preparing a CSV dataset for machine learning.
+  You will receive step-by-step instructions. Execute each step precisely
+  using run_python with pandas. Save intermediate results to the workspace
+  directory so the next step can pick up where you left off.
+  Always print a short summary of what changed (rows before/after, columns
+  affected) so progress is visible.
+steps:
+  - id: handle_missing
+    prompt: |
+      Handle all missing values in the dataset.
+      1. Load the CSV file with pandas.
+      2. Report which columns have missing values and how many.
+      3. For numeric columns, fill missing values with the column median.
+      4. For categorical/string columns, fill missing values with the mode.
+      5. Verify no missing values remain.
+      6. Save the cleaned dataframe to "cleaned.csv" in the workspace.
+  - id: remove_duplicates
+    prompt: |
+      Remove duplicate rows from the dataset.
+      1. Load "cleaned.csv" from the workspace.
+      2. Report the number of duplicate rows found.
+      3. Drop all duplicate rows, keeping the first occurrence.
+      4. Report the number of rows remaining after deduplication.
+      5. Save the result to "deduped.csv" in the workspace.
+  - id: normalize
+    prompt: |
+      Normalize all numeric columns using min-max scaling.
+      1. Load "deduped.csv" from the workspace.
+      2. Identify all numeric columns.
+      3. Apply min-max normalization: (x - min) / (max - min) for each numeric column.
+      4. Leave non-numeric columns unchanged.
+      5. Report the columns that were normalized and their new min/max values.
+      6. Save the result to "normalized.csv" in the workspace.
+  - id: split
+    prompt: |
+      Split the dataset into train and test sets.
+      1. Load "normalized.csv" from the workspace.
+      2. Shuffle the rows with a fixed random seed (seed=42) for reproducibility.
+      3. Split into 80% train and 20% test.
+      4. Report the number of rows in each set.
+      5. Save "train.csv" and "test.csv" to the workspace.
+input:
+  file: "path to CSV file"
+output:
+  train: "train.csv in workspace"
+  test: "test.csv in workspace"
