@@ -24,25 +24,31 @@ function parseArgs(argv: string[]): {
   }
 
   const skillPath = args[0];
+  if (!skillPath) {
+    printUsage();
+    process.exit(1);
+  }
+
   const input: Record<string, string> = {};
   let workspaceDir = "./workspace";
 
   let i = 1;
   while (i < args.length) {
-    if (args[i] === "--input" && i + 1 < args.length) {
-      const pair = args[i + 1];
-      const eqIndex = pair.indexOf("=");
+    const arg = args[i];
+    const nextArg = args[i + 1];
+    if (arg === "--input" && nextArg !== undefined) {
+      const eqIndex = nextArg.indexOf("=");
       if (eqIndex === -1) {
-        console.error(`Error: invalid --input format: "${pair}". Expected key=value`);
+        console.error(`Error: invalid --input format: "${nextArg}". Expected key=value`);
         process.exit(1);
       }
-      input[pair.substring(0, eqIndex)] = pair.substring(eqIndex + 1);
+      input[nextArg.substring(0, eqIndex)] = nextArg.substring(eqIndex + 1);
       i += 2;
-    } else if (args[i] === "--workspace" && i + 1 < args.length) {
-      workspaceDir = args[i + 1];
+    } else if (arg === "--workspace" && nextArg !== undefined) {
+      workspaceDir = nextArg;
       i += 2;
     } else {
-      console.error(`Error: unknown argument: ${args[i]}`);
+      console.error(`Error: unknown argument: ${arg}`);
       printUsage();
       process.exit(1);
     }

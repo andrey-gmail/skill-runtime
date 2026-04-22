@@ -56,7 +56,7 @@ npx tsx src/cli.ts skills/csv-prepare-for-ml/skill.yaml --input file=data.csv
 | Variable | Description | Default |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Anthropic API key (required) | — |
-| `ANTHROPIC_MODEL` | Model to use | `claude-sonnet-4-20250514` |
+| `ANTHROPIC_MODEL` | Model to use | `claude-sonnet-4-5` |
 | `PYTHON_CMD` | Python executable | `python` on Windows, `python3` elsewhere |
 
 ## Skill YAML Format
@@ -117,3 +117,5 @@ solution/
 ```bash
 pnpm test
 ```
+
+Unit tests cover Skill Loader (validation, round-trip) and Tool Registry (read_file, list_directory, run_python). Tests are in `src/runtime.test.ts`.

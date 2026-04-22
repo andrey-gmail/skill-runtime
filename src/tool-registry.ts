@@ -1,76 +1,73 @@
 import { readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
-import { execSync } from "node:child_process";
-import { resolve, normalize, join } from "node:path";
+import { execFile } from "node:child_process";
+import { resolve, normalize, join, sep } from "node:path";
 import { randomBytes } from "node:crypto";
+import { promisify } from "node:util";
 import type { ToolDefinition } from "./types.js";
 
-const PYTHON_CMD = process.env.PYTHON_CMD || (process.platform === "win32" ? "python" : "python3");
+const execFileAsync = promisify(execFile);
+const PYTHON_CMD = process.env.PYTHON_CMD ?? (process.platform === "win32" ? "python" : "python3");
+
+const MAX_OUTPUT_BYTES = 100_000;
 
 function isInsideWorkspace(filePath: string, workspaceDir: string): boolean {
-  const resolved = resolve(workspaceDir, filePath);
-  const normalizedWorkspace = normalize(resolve(workspaceDir)).toLowerCase();
-  const normalizedResolved = normalize(resolved).toLowerCase();
-  return normalizedResolved.startsWith(normalizedWorkspace);
+  const resolvedWorkspace = normalize(resolve(workspaceDir)).toLowerCase();
+  const workspaceWithSep = resolvedWorkspace.endsWith(sep)
+    ? resolvedWorkspace
+    : resolvedWorkspace + sep;
+  const resolvedPath = normalize(resolve(workspaceDir, filePath)).toLowerCase();
+  // Allow exact match (the workspace dir itself) or paths inside it
+  return resolvedPath === resolvedWorkspace || resolvedPath.startsWith(workspaceWithSep);
 }
 
 function readFile(args: Record<string, unknown>, workspaceDir: string): string {
-  const filePath = args.path as string;
+  const filePath = args["path"];
+  if (typeof filePath !== "string") return "Error: missing required argument 'path'";
   if (!isInsideWorkspace(filePath, workspaceDir)) {
     return "Error: path outside workspace";
   }
   try {
-    const fullPath = resolve(workspaceDir, filePath);
-    return readFileSync(fullPath, "utf-8");
+    return readFileSync(resolve(workspaceDir, filePath), "utf-8");
   } catch {
     return `Error: file not found: ${filePath}`;
   }
 }
 
 function listDirectory(args: Record<string, unknown>, workspaceDir: string): string {
-  const dirPath = args.path as string;
+  const dirPath = args["path"];
+  if (typeof dirPath !== "string") return "Error: missing required argument 'path'";
   if (!isInsideWorkspace(dirPath, workspaceDir)) {
     return "Error: path outside workspace";
   }
   try {
-    const fullPath = resolve(workspaceDir, dirPath);
-    const entries = readdirSync(fullPath, { withFileTypes: true });
+    const entries = readdirSync(resolve(workspaceDir, dirPath), { withFileTypes: true });
     return entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).join("\n");
   } catch {
     return `Error: directory not found: ${dirPath}`;
   }
 }
 
-function runPython(args: Record<string, unknown>, workspaceDir: string): string {
-  const code = args.code as string;
-  const tmpFile = join(workspaceDir, `_tmp_${randomBytes(4).toString("hex")}.py`);
+async function runPython(args: Record<string, unknown>, workspaceDir: string): Promise<string> {
+  const code = args["code"];
+  if (typeof code !== "string") return "Error: missing required argument 'code'";
+  const absWorkspace = resolve(workspaceDir);
+  const tmpFile = join(absWorkspace, `_tmp_${randomBytes(4).toString("hex")}.py`);
   try {
     writeFileSync(tmpFile, code, "utf-8");
-    const result = execSync(`${PYTHON_CMD} ${JSON.stringify(tmpFile)}`, {
+    const { stdout } = await execFileAsync(PYTHON_CMD, [tmpFile], {
       timeout: 30000,
-      cwd: workspaceDir,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
+      cwd: absWorkspace,
+      maxBuffer: MAX_OUTPUT_BYTES,
     });
-    return result;
+    return stdout;
   } catch (err: unknown) {
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      "killed" in err &&
-      (err as { killed: boolean }).killed
-    ) {
-      return "Error: execution timed out after 30 seconds";
+    if (typeof err === "object" && err !== null) {
+      const e = err as { killed?: boolean; stderr?: string; message?: string };
+      if (e.killed) return "Error: execution timed out after 30 seconds";
+      if (e.stderr && e.stderr.length > 0) return e.stderr;
+      if (e.message) return `Error: ${e.message}`;
     }
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      "stderr" in err &&
-      typeof (err as { stderr: unknown }).stderr === "string" &&
-      (err as { stderr: string }).stderr.length > 0
-    ) {
-      return (err as { stderr: string }).stderr;
-    }
-    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    return `Error: ${String(err)}`;
   } finally {
     try { unlinkSync(tmpFile); } catch { /* ignore */ }
   }
@@ -112,10 +109,9 @@ const TOOL_DEFINITIONS: Record<string, ToolDefinition> = {
   },
 };
 
-const TOOL_IMPLEMENTATIONS: Record<
-  string,
-  (args: Record<string, unknown>, workspaceDir: string) => string
-> = {
+type ToolImpl = (args: Record<string, unknown>, workspaceDir: string) => string | Promise<string>;
+
+const TOOL_IMPLEMENTATIONS: Record<string, ToolImpl> = {
   read_file: readFile,
   list_directory: listDirectory,
   run_python: runPython,
@@ -127,14 +123,13 @@ export async function execute(
   workspaceDir: string
 ): Promise<string> {
   const impl = TOOL_IMPLEMENTATIONS[name];
-  if (!impl) {
-    return `Error: unknown tool: ${name}`;
-  }
+  if (!impl) return `Error: unknown tool: ${name}`;
   return impl(args, workspaceDir);
 }
 
 export function getToolDefinitions(allowedTools: string[]): ToolDefinition[] {
-  return allowedTools
-    .filter((name) => TOOL_DEFINITIONS[name] !== undefined)
-    .map((name) => TOOL_DEFINITIONS[name]);
+  return allowedTools.flatMap((name) => {
+    const def = TOOL_DEFINITIONS[name];
+    return def ? [def] : [];
+  });
 }

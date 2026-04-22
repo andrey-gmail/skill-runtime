@@ -119,13 +119,15 @@ Tools:
 |---|---|---|---|
 | `read_file` | `{ path: string }` | File contents | Path relative to workspaceDir |
 | `list_directory` | `{ path: string }` | File/dir list | Path relative to workspaceDir |
-| `run_python` | `{ code: string }` | stdout | Timeout 30s, cwd = workspaceDir, Python command via env `PYTHON_CMD` (default: `python` on Windows, `python3` elsewhere) |
+| `run_python` | `{ code: string }` | stdout | Code written to a temp `.py` file and executed via `execFileAsync` (async, non-blocking). Timeout 30s, cwd = workspaceDir, Python command via env `PYTHON_CMD` (default: `python` on Windows, `python3` elsewhere) |
 
 All file paths resolve relative to `workspaceDir`. Path traversal protection: paths are normalized and compared case-insensitive (for Windows compatibility). On execution error — returns error text (stderr / exception message), not an exception. The model must see errors and react to them.
 
 ### Agent Runner
 
-Main LLM interaction loop. Single entry point for both modes. Shared `handleToolCalls` function processes tool calls in both modes (DRY). Model configurable via env `ANTHROPIC_MODEL` (default: `claude-sonnet-4-20250514`).
+Main LLM interaction loop. Single entry point for both modes. Shared `runLoop` function implements the tool-use loop used by both `runFree` and `runPipeline` (DRY). Model configurable via env `ANTHROPIC_MODEL` (default: `claude-sonnet-4-5`). Maximum iterations per loop capped at 50 to prevent infinite loops.
+
+Loop exits only when `stop_reason === "end_turn"` **and** no `tool_use` blocks are present — this avoids skipping tool calls that the Anthropic API may return alongside `end_turn` in edge cases.
 
 ```typescript
 interface AgentRunner {
@@ -143,19 +145,19 @@ if (skill.steps && skill.steps.length > 0) {
 ```
 
 **Free mode (`runFree`):**
-1. Forms system message from `system_prompt`
+1. Forms system message from `system_prompt` + workspace path
 2. Forms first user message from `input`
-3. Runs tool-use loop: send → receive → if tool_call — execute and send result → repeat
-4. Completes when model returns `stop_reason: "end_turn"` without tool_calls
+3. Delegates to `runLoop` — exits when `stop_reason === "end_turn"` and no tool_use blocks
 
 **Pipeline mode (`runPipeline`):**
-1. Forms system message from `system_prompt`
-2. For each step:
-   a. Adds user message with `step.prompt` (including workspace path)
-   b. Runs tool-use loop within step
-   c. When model returns text without tool_calls — step complete
+1. Forms system message from `system_prompt` + workspace path
+2. Receives `steps` as an explicit parameter (no non-null assertion)
+3. For each step:
+   a. Adds user message with `step.prompt`
+   b. Delegates to `runLoop` for the step's tool-use cycle
+   c. Appends final assistant response to history
    d. Logs `[Step ${step.id}] completed`
-3. Returns last step's response
+4. Returns last step's response
 
 ### CLI
 
